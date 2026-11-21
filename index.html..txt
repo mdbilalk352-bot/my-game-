@@ -1,0 +1,1032 @@
+// ============================================================================
+// PROJECT UNKNOWN - Small Playable Prototype (single file)
+//
+// SETUP: is file ko Assets/Scripts/ProjectUnknownPrototype.cs naam se save karein.
+//  - Kisi bhi scene (khali scene bhi) me Play dabayein. Sab kuch code se ban jata hai:
+//    zameen, ped, patthar, player, camera, NPC, pickups aur HUD.
+//  - File ka naam ProjectUnknownPrototype.cs hi rakhein (MonoBehaviour ka naam = file ka naam).
+//  - GameRoot.cs ke saath ya uske bina, dono tarah chalta hai (dono independent hain).
+//
+// CONTROLS
+//   PC:      WASD chalna | Shift daudna | Space kudna | E khana | Right-mouse drag camera
+//            F5 save | F9 load | R (marne ke baad) respawn
+//   Mobile:  left side drag = joystick | right side drag = camera | JUMP/RUN/EAT buttons
+//
+// GAMEPLAY
+//   Health, Stamina, Hunger. Hunger 0 hone par health ghatti hai. Lakdi aur khana uthayein.
+//   Peele "Elder" ke paas jayein: 5 lakdi lao quest. Progress auto-save hota hai.
+//
+// NOTE: Input System (naya) aur Legacy Input dono supported hain. Touch sirf naye
+//       Input System me hai (Unity 6 template me wahi default hota hai).
+// ============================================================================
+using System.Collections.Generic;
+using UnityEngine;
+#if ENABLE_INPUT_SYSTEM
+using UnityEngine.InputSystem;
+#endif
+
+namespace ProjectUnknown.Prototype
+{
+    // ------------------------------------------------------------------------
+    // Input: keyboard, mouse and a simple touch layout (virtual joystick, look
+    // drag, three buttons). All coordinates here are GUI space (origin top-left).
+    // ------------------------------------------------------------------------
+    internal sealed class ProtoInput
+    {
+        public Vector2 Move;
+        public Vector2 Look;
+        public bool JumpPressed;
+        public bool SprintHeld;
+        public bool EatPressed;
+        public bool SavePressed;
+        public bool LoadPressed;
+        public bool RespawnPressed;
+        public bool TapAnywhere;
+
+        public bool JoystickActive;
+        public Vector2 JoystickOrigin;
+        public Vector2 JoystickCurrent;
+        public float JoystickRadius = 90f;
+
+        public Rect JumpRect;
+        public Rect SprintRect;
+        public Rect EatRect;
+        public Rect SaveRect;
+        public Rect LoadRect;
+
+        private bool _sprintKey;
+        private int _joystickId = -1;
+        private int _lookId = -1;
+
+        public void Poll()
+        {
+            UpdateLayout();
+
+            Move = Vector2.zero;
+            Look = Vector2.zero;
+            JumpPressed = false;
+            EatPressed = false;
+            SavePressed = false;
+            LoadPressed = false;
+            RespawnPressed = false;
+            TapAnywhere = false;
+            bool sprintTouch = false;
+
+#if ENABLE_INPUT_SYSTEM
+            PollKeyboardAndMouse();
+            PollTouch(ref sprintTouch);
+#elif ENABLE_LEGACY_INPUT_MANAGER
+            PollLegacy();
+#endif
+
+            SprintHeld = _sprintKey || sprintTouch;
+            if (Move.sqrMagnitude > 1f)
+            {
+                Move.Normalize();
+            }
+        }
+
+        private void UpdateLayout()
+        {
+            float w = Screen.width;
+            float h = Screen.height;
+            float u = Mathf.Min(w, h) * 0.17f;
+            float m = u * 0.25f;
+
+            JoystickRadius = u * 0.8f;
+            JumpRect = new Rect(w - u - m, h - u - m, u, u);
+            SprintRect = new Rect(w - 2f * u - 2f * m, h - u * 0.85f - m, u * 0.85f, u * 0.85f);
+            EatRect = new Rect(w - u - m, h - 2f * u - 2f * m, u, u * 0.7f);
+            LoadRect = new Rect(w - u * 0.9f - m, m, u * 0.9f, u * 0.5f);
+            SaveRect = new Rect(w - 2f * (u * 0.9f) - 2f * m, m, u * 0.9f, u * 0.5f);
+        }
+
+        /// <summary>Handles a press on an on-screen button. Returns true if a button was hit.</summary>
+        private bool HandleTap(Vector2 p)
+        {
+            if (JumpRect.Contains(p))
+            {
+                JumpPressed = true;
+                return true;
+            }
+
+            if (SprintRect.Contains(p))
+            {
+                return true; // hold-button: read every frame in PollTouch
+            }
+
+            if (EatRect.Contains(p))
+            {
+                EatPressed = true;
+                return true;
+            }
+
+            if (SaveRect.Contains(p))
+            {
+                SavePressed = true;
+                return true;
+            }
+
+            if (LoadRect.Contains(p))
+            {
+                LoadPressed = true;
+                return true;
+            }
+
+            return false;
+        }
+
+        private static Vector2 ToGui(Vector2 screenPos)
+        {
+            return new Vector2(screenPos.x, Screen.height - screenPos.y);
+        }
+
+#if ENABLE_INPUT_SYSTEM
+        private void PollKeyboardAndMouse()
+        {
+            Keyboard keyboard = Keyboard.current;
+            if (keyboard != null)
+            {
+                float x = (keyboard.dKey.isPressed ? 1f : 0f) - (keyboard.aKey.isPressed ? 1f : 0f);
+                float y = (keyboard.wKey.isPressed ? 1f : 0f) - (keyboard.sKey.isPressed ? 1f : 0f);
+                Move += new Vector2(x, y);
+
+                if (keyboard.spaceKey.wasPressedThisFrame) { JumpPressed = true; }
+                if (keyboard.eKey.wasPressedThisFrame) { EatPressed = true; }
+                if (keyboard.f5Key.wasPressedThisFrame) { SavePressed = true; }
+                if (keyboard.f9Key.wasPressedThisFrame) { LoadPressed = true; }
+                if (keyboard.rKey.wasPressedThisFrame) { RespawnPressed = true; }
+                _sprintKey = keyboard.leftShiftKey.isPressed;
+            }
+
+            Mouse mouse = Mouse.current;
+            if (mouse != null)
+            {
+                if (mouse.rightButton.isPressed)
+                {
+                    Look += mouse.delta.ReadValue();
+                }
+
+                if (mouse.leftButton.wasPressedThisFrame)
+                {
+                    TapAnywhere = true;
+                    HandleTap(ToGui(mouse.position.ReadValue()));
+                }
+            }
+        }
+
+        private void PollTouch(ref bool sprintTouch)
+        {
+            Touchscreen screen = Touchscreen.current;
+            if (screen == null)
+            {
+                return;
+            }
+
+            bool joystickDown = false;
+            bool lookDown = false;
+            var touches = screen.touches;
+
+            for (int i = 0; i < touches.Count; i++)
+            {
+                var touch = touches[i];
+                if (!touch.press.isPressed)
+                {
+                    continue;
+                }
+
+                int id = touch.touchId.ReadValue();
+                Vector2 pos = ToGui(touch.position.ReadValue());
+
+                if (touch.press.wasPressedThisFrame)
+                {
+                    TapAnywhere = true;
+                    if (!HandleTap(pos))
+                    {
+                        if (pos.x < Screen.width * 0.45f && _joystickId < 0)
+                        {
+                            _joystickId = id;
+                            JoystickOrigin = pos;
+                            JoystickCurrent = pos;
+                        }
+                        else if (_lookId < 0)
+                        {
+                            _lookId = id;
+                        }
+                    }
+                }
+
+                if (id == _joystickId)
+                {
+                    joystickDown = true;
+                    JoystickCurrent = pos;
+                }
+                else if (id == _lookId)
+                {
+                    lookDown = true;
+                    Look += touch.delta.ReadValue();
+                }
+
+                if (SprintRect.Contains(pos))
+                {
+                    sprintTouch = true;
+                }
+            }
+
+            if (!joystickDown)
+            {
+                _joystickId = -1;
+            }
+
+            if (!lookDown)
+            {
+                _lookId = -1;
+            }
+
+            JoystickActive = _joystickId >= 0;
+            if (JoystickActive)
+            {
+                Vector2 offset = (JoystickCurrent - JoystickOrigin) / JoystickRadius;
+                offset = Vector2.ClampMagnitude(offset, 1f);
+                Move += new Vector2(offset.x, -offset.y); // GUI y points down, movement y points forward
+            }
+        }
+#elif ENABLE_LEGACY_INPUT_MANAGER
+        private void PollLegacy()
+        {
+            Move = new Vector2(Input.GetAxisRaw("Horizontal"), Input.GetAxisRaw("Vertical"));
+            if (Input.GetKeyDown(KeyCode.Space)) { JumpPressed = true; }
+            if (Input.GetKeyDown(KeyCode.E)) { EatPressed = true; }
+            if (Input.GetKeyDown(KeyCode.F5)) { SavePressed = true; }
+            if (Input.GetKeyDown(KeyCode.F9)) { LoadPressed = true; }
+            if (Input.GetKeyDown(KeyCode.R)) { RespawnPressed = true; }
+            _sprintKey = Input.GetKey(KeyCode.LeftShift);
+
+            if (Input.GetMouseButton(1))
+            {
+                Look = new Vector2(Input.GetAxis("Mouse X"), Input.GetAxis("Mouse Y")) * 12f;
+            }
+
+            if (Input.GetMouseButtonDown(0))
+            {
+                TapAnywhere = true;
+                HandleTap(new Vector2(Input.mousePosition.x, Screen.height - Input.mousePosition.y));
+            }
+        }
+#endif
+    }
+
+    // ------------------------------------------------------------------------
+    // Save data (JSON). Public fields so Unity's JsonUtility can serialise it.
+    // ------------------------------------------------------------------------
+    [System.Serializable]
+    public sealed class ProtoSaveData
+    {
+        public float PosX;
+        public float PosY;
+        public float PosZ;
+        public float Yaw;
+        public float Health;
+        public float Stamina;
+        public float Hunger;
+        public int Wood;
+        public int Food;
+        public int QuestState;
+        public bool[] Collected;
+    }
+
+    // ------------------------------------------------------------------------
+    // The prototype: builds a small world and runs the whole game loop.
+    // ------------------------------------------------------------------------
+    public sealed class ProjectUnknownPrototype : MonoBehaviour
+    {
+        private enum QuestState
+        {
+            NotStarted = 0,
+            Active = 1,
+            Completed = 2
+        }
+
+        private sealed class Pickup
+        {
+            public Transform Transform;
+            public bool IsWood;
+            public bool Collected;
+            public float BaseY;
+        }
+
+        // ---- Tuning ----
+        private const float MaxStat = 100f;
+        private const float WalkSpeed = 4f;
+        private const float SprintSpeed = 7f;
+        private const float JumpHeight = 1.2f;
+        private const float Gravity = 20f;
+        private const float SprintDrain = 22f;
+        private const float StaminaRegen = 14f;
+        private const float StaminaRegenDelay = 0.8f;
+        private const float ExhaustRecover = 25f;
+        private const float JumpCost = 12f;
+        private const float HungerDecay = 0.35f;
+        private const float StarveDamage = 3f;
+        private const float HealRate = 1.5f;
+        private const float HealHungerThreshold = 60f;
+        private const float FoodRestore = 30f;
+        private const float CameraDistance = 5f;
+        private const float LookSensitivity = 0.15f;
+        private const float PickupRadius = 1.4f;
+        private const float NpcRadius = 3.5f;
+        private const float WorldHalfSize = 40f;
+        private const int TreeCount = 35;
+        private const int RockCount = 8;
+        private const int WoodCount = 10;
+        private const int FoodCount = 6;
+        private const int WoodGoal = 5;
+        private const int WorldSeed = 1234;
+
+        private static readonly Vector3 SpawnPoint = new Vector3(0f, 1.1f, 0f);
+        private static readonly Vector3 NpcPoint = new Vector3(10f, 1f, 8f);
+
+        // ---- Scene references ----
+        private Transform _root;
+        private Transform _player;
+        private Transform _npc;
+        private Transform _cameraTransform;
+        private Camera _camera;
+        private CharacterController _controller;
+        private readonly List<Pickup> _pickups = new List<Pickup>();
+        private readonly Dictionary<Color, Material> _materials = new Dictionary<Color, Material>();
+        private Material _baseMaterial;
+        private readonly ProtoInput _input = new ProtoInput();
+
+        // ---- Game state ----
+        private float _health = MaxStat;
+        private float _stamina = MaxStat;
+        private float _hunger = MaxStat;
+        private float _staminaIdle;
+        private bool _exhausted;
+        private bool _dead;
+        private float _verticalVelocity;
+        private float _yaw;
+        private float _pitch = 20f;
+        private int _wood;
+        private int _food;
+        private QuestState _quest = QuestState.NotStarted;
+        private string _toast = string.Empty;
+        private float _toastUntil;
+
+        // ---- GUI ----
+        private GUIStyle _leftStyle;
+        private GUIStyle _centerStyle;
+
+        private static string SavePath
+        {
+            get { return System.IO.Path.Combine(Application.persistentDataPath, "prototype_save.json"); }
+        }
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+        private static void AutoStart()
+        {
+            if (FindFirstObjectByType<ProjectUnknownPrototype>() != null)
+            {
+                return;
+            }
+
+            new GameObject("[ProjectUnknown] Prototype").AddComponent<ProjectUnknownPrototype>();
+        }
+
+        private void Awake()
+        {
+            BuildWorld();
+            if (System.IO.File.Exists(SavePath))
+            {
+                Load(true);
+            }
+        }
+
+        private void Update()
+        {
+            float dt = Time.deltaTime;
+            _input.Poll();
+
+            if (_dead)
+            {
+                if (_input.RespawnPressed || _input.TapAnywhere)
+                {
+                    Respawn();
+                }
+
+                return;
+            }
+
+            if (_input.SavePressed) { Save(); }
+            if (_input.LoadPressed) { Load(false); }
+            if (_input.EatPressed) { Eat(); }
+
+            UpdateMovement(dt);
+            UpdateSurvival(dt);
+            UpdatePickups(dt);
+            UpdateQuest();
+
+            if (_player.position.y < -20f)
+            {
+                Teleport(SpawnPoint, _yaw); // safety net if the player ever leaves the world
+            }
+        }
+
+        private void LateUpdate()
+        {
+            if (_player == null)
+            {
+                return;
+            }
+
+            _yaw += _input.Look.x * LookSensitivity;
+            _pitch = Mathf.Clamp(_pitch - _input.Look.y * LookSensitivity, -10f, 60f);
+
+            Quaternion rotation = Quaternion.Euler(_pitch, _yaw, 0f);
+            Vector3 pivot = _player.position + Vector3.up * 1.2f;
+            Vector3 desired = pivot - rotation * Vector3.forward * CameraDistance;
+
+            RaycastHit hit;
+            if (Physics.Linecast(pivot, desired, out hit))
+            {
+                desired = hit.point + hit.normal * 0.2f; // keep the camera in front of walls and trees
+            }
+
+            _cameraTransform.SetPositionAndRotation(desired, Quaternion.LookRotation(pivot - desired));
+        }
+
+        private void OnApplicationPause(bool paused)
+        {
+            // Android can kill the app while backgrounded: this is the reliable moment to save.
+            if (paused && !_dead && _player != null)
+            {
+                Save();
+            }
+        }
+
+        // =====================================================================
+        // Gameplay
+        // =====================================================================
+        private void UpdateMovement(float dt)
+        {
+            Quaternion yawRotation = Quaternion.Euler(0f, _yaw, 0f);
+            Vector3 direction = yawRotation * new Vector3(_input.Move.x, 0f, _input.Move.y);
+            bool moving = direction.sqrMagnitude > 0.01f;
+            if (direction.sqrMagnitude > 1f)
+            {
+                direction.Normalize();
+            }
+
+            if (_exhausted && _stamina >= ExhaustRecover)
+            {
+                _exhausted = false;
+            }
+
+            bool sprinting = _input.SprintHeld && moving && !_exhausted && _stamina > 0f;
+            if (sprinting)
+            {
+                _stamina -= SprintDrain * dt;
+                _staminaIdle = 0f;
+                if (_stamina <= 0f)
+                {
+                    _stamina = 0f;
+                    _exhausted = true; // must recover before sprinting again
+                }
+            }
+            else
+            {
+                _staminaIdle += dt;
+                if (_staminaIdle >= StaminaRegenDelay)
+                {
+                    _stamina = Mathf.Min(MaxStat, _stamina + StaminaRegen * dt);
+                }
+            }
+
+            bool grounded = _controller.isGrounded;
+            if (grounded && _verticalVelocity < 0f)
+            {
+                _verticalVelocity = -2f;
+            }
+
+            if (grounded && _input.JumpPressed && _stamina >= JumpCost)
+            {
+                _verticalVelocity = Mathf.Sqrt(2f * Gravity * JumpHeight);
+                _stamina -= JumpCost;
+                _staminaIdle = 0f;
+            }
+
+            _verticalVelocity -= Gravity * dt;
+
+            Vector3 velocity = direction * (sprinting ? SprintSpeed : WalkSpeed);
+            velocity.y = _verticalVelocity;
+            _controller.Move(velocity * dt);
+
+            if (moving)
+            {
+                Quaternion target = Quaternion.LookRotation(direction);
+                _player.rotation = Quaternion.RotateTowards(_player.rotation, target, 720f * dt);
+            }
+        }
+
+        private void UpdateSurvival(float dt)
+        {
+            _hunger = Mathf.Max(0f, _hunger - HungerDecay * dt);
+
+            if (_hunger <= 0f)
+            {
+                _health -= StarveDamage * dt;
+            }
+            else if (_hunger > HealHungerThreshold && _health < MaxStat)
+            {
+                _health = Mathf.Min(MaxStat, _health + HealRate * dt);
+            }
+
+            if (_health <= 0f)
+            {
+                _health = 0f;
+                _dead = true;
+                ShowToast("You died");
+            }
+        }
+
+        private void UpdatePickups(float dt)
+        {
+            for (int i = 0; i < _pickups.Count; i++)
+            {
+                Pickup pickup = _pickups[i];
+                if (pickup.Collected)
+                {
+                    continue;
+                }
+
+                Vector3 position = pickup.Transform.position;
+                position.y = pickup.BaseY + Mathf.Sin(Time.time * 2f + i) * 0.1f;
+                pickup.Transform.position = position;
+                pickup.Transform.Rotate(0f, 90f * dt, 0f, Space.World);
+
+                Vector3 delta = position - _player.position;
+                delta.y = 0f;
+                if (delta.sqrMagnitude > PickupRadius * PickupRadius)
+                {
+                    continue;
+                }
+
+                pickup.Collected = true;
+                pickup.Transform.gameObject.SetActive(false);
+                if (pickup.IsWood)
+                {
+                    _wood++;
+                    ShowToast("+1 Wood");
+                }
+                else
+                {
+                    _food++;
+                    ShowToast("+1 Food");
+                }
+            }
+        }
+
+        private void UpdateQuest()
+        {
+            Vector3 delta = _npc.position - _player.position;
+            delta.y = 0f;
+            if (delta.sqrMagnitude > NpcRadius * NpcRadius)
+            {
+                return;
+            }
+
+            if (_quest == QuestState.NotStarted)
+            {
+                _quest = QuestState.Active;
+                ShowToast("Elder: Bring me " + WoodGoal + " wood, traveler.");
+            }
+            else if (_quest == QuestState.Active && _wood >= WoodGoal)
+            {
+                _wood -= WoodGoal;
+                _food += 2;
+                _quest = QuestState.Completed;
+                ShowToast("Quest complete! +2 Food");
+            }
+        }
+
+        private void Eat()
+        {
+            if (_food <= 0)
+            {
+                ShowToast("No food");
+                return;
+            }
+
+            if (_hunger >= MaxStat - 1f)
+            {
+                ShowToast("Not hungry");
+                return;
+            }
+
+            _food--;
+            _hunger = Mathf.Min(MaxStat, _hunger + FoodRestore);
+            ShowToast("Yum! +" + (int)FoodRestore + " hunger");
+        }
+
+        private void Respawn()
+        {
+            _health = MaxStat;
+            _stamina = MaxStat;
+            _hunger = MaxStat;
+            _exhausted = false;
+            _dead = false;
+            Teleport(SpawnPoint, 0f);
+        }
+
+        private void Teleport(Vector3 position, float yaw)
+        {
+            _controller.enabled = false; // CharacterController must be off to move the transform directly
+            _player.position = position;
+            _controller.enabled = true;
+            _verticalVelocity = 0f;
+            _yaw = yaw;
+        }
+
+        private void ShowToast(string message)
+        {
+            _toast = message;
+            _toastUntil = Time.time + 3f;
+        }
+
+        // =====================================================================
+        // Save / Load
+        // =====================================================================
+        private void Save()
+        {
+            if (_dead)
+            {
+                return;
+            }
+
+            try
+            {
+                var data = new ProtoSaveData
+                {
+                    PosX = _player.position.x,
+                    PosY = _player.position.y,
+                    PosZ = _player.position.z,
+                    Yaw = _yaw,
+                    Health = _health,
+                    Stamina = _stamina,
+                    Hunger = _hunger,
+                    Wood = _wood,
+                    Food = _food,
+                    QuestState = (int)_quest,
+                    Collected = new bool[_pickups.Count]
+                };
+
+                for (int i = 0; i < _pickups.Count; i++)
+                {
+                    data.Collected[i] = _pickups[i].Collected;
+                }
+
+                string tempPath = SavePath + ".tmp";
+                System.IO.File.WriteAllText(tempPath, JsonUtility.ToJson(data));
+                if (System.IO.File.Exists(SavePath))
+                {
+                    System.IO.File.Delete(SavePath);
+                }
+
+                System.IO.File.Move(tempPath, SavePath);
+                ShowToast("Game saved");
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogError("[PU] Save failed: " + ex);
+                ShowToast("Save failed");
+            }
+        }
+
+        private void Load(bool silent)
+        {
+            try
+            {
+                if (!System.IO.File.Exists(SavePath))
+                {
+                    if (!silent) { ShowToast("No save found"); }
+                    return;
+                }
+
+                ProtoSaveData data = JsonUtility.FromJson<ProtoSaveData>(System.IO.File.ReadAllText(SavePath));
+                if (data == null || float.IsNaN(data.PosX) || float.IsNaN(data.PosY) || float.IsNaN(data.PosZ))
+                {
+                    throw new System.InvalidOperationException("save file is empty or corrupted");
+                }
+
+                _health = Mathf.Clamp(data.Health, 1f, MaxStat);
+                _stamina = Mathf.Clamp(data.Stamina, 0f, MaxStat);
+                _hunger = Mathf.Clamp(data.Hunger, 0f, MaxStat);
+                _wood = Mathf.Max(0, data.Wood);
+                _food = Mathf.Max(0, data.Food);
+                _quest = System.Enum.IsDefined(typeof(QuestState), data.QuestState)
+                    ? (QuestState)data.QuestState
+                    : QuestState.NotStarted;
+
+                // Collected flags only apply if the world has the same number of pickups.
+                if (data.Collected != null && data.Collected.Length == _pickups.Count)
+                {
+                    for (int i = 0; i < _pickups.Count; i++)
+                    {
+                        _pickups[i].Collected = data.Collected[i];
+                        _pickups[i].Transform.gameObject.SetActive(!data.Collected[i]);
+                    }
+                }
+
+                _dead = false;
+                _exhausted = false;
+                Vector3 position = new Vector3(data.PosX, Mathf.Max(data.PosY, 0.5f), data.PosZ);
+                Teleport(position, data.Yaw);
+                if (!silent) { ShowToast("Game loaded"); }
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogError("[PU] Load failed: " + ex);
+                if (!silent) { ShowToast("Load failed"); }
+            }
+        }
+
+        // =====================================================================
+        // World building (all from primitives: no assets needed)
+        // =====================================================================
+        private void BuildWorld()
+        {
+            _root = new GameObject("World").transform;
+            _root.SetParent(transform, false);
+
+            // Borrow the render pipeline's default material so colours work in URP and built-in.
+            GameObject probe = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            _baseMaterial = probe.GetComponent<Renderer>().sharedMaterial;
+            Destroy(probe);
+
+            if (FindFirstObjectByType<Light>() == null)
+            {
+                var lightObject = new GameObject("Sun");
+                lightObject.transform.SetParent(_root, false);
+                lightObject.transform.rotation = Quaternion.Euler(50f, -30f, 0f);
+                lightObject.AddComponent<Light>().type = LightType.Directional;
+            }
+
+            _camera = Camera.main;
+            if (_camera == null)
+            {
+                var cameraObject = new GameObject("Main Camera");
+                cameraObject.tag = "MainCamera";
+                _camera = cameraObject.AddComponent<Camera>();
+                _camera.clearFlags = CameraClearFlags.SolidColor;
+                _camera.backgroundColor = new Color(0.55f, 0.75f, 0.95f);
+                cameraObject.AddComponent<AudioListener>();
+            }
+
+            _cameraTransform = _camera.transform;
+
+            BuildGround();
+            Random.InitState(WorldSeed); // fixed seed: same world every run, so saved pickup indices stay valid
+            BuildScenery();
+            BuildNpc();
+            BuildPickups();
+            BuildPlayer();
+        }
+
+        private void BuildGround()
+        {
+            float size = WorldHalfSize * 2f;
+            Color grass = new Color(0.30f, 0.55f, 0.28f);
+            Color wall = new Color(0.25f, 0.25f, 0.28f);
+
+            Prim(PrimitiveType.Cube, "Ground", new Vector3(0f, -0.5f, 0f), new Vector3(size, 1f, size), grass, true);
+
+            float edge = WorldHalfSize + 0.5f;
+            float length = size + 2f;
+            Prim(PrimitiveType.Cube, "WallN", new Vector3(0f, 1.5f, edge), new Vector3(length, 3f, 1f), wall, true);
+            Prim(PrimitiveType.Cube, "WallS", new Vector3(0f, 1.5f, -edge), new Vector3(length, 3f, 1f), wall, true);
+            Prim(PrimitiveType.Cube, "WallE", new Vector3(edge, 1.5f, 0f), new Vector3(1f, 3f, length), wall, true);
+            Prim(PrimitiveType.Cube, "WallW", new Vector3(-edge, 1.5f, 0f), new Vector3(1f, 3f, length), wall, true);
+        }
+
+        private void BuildScenery()
+        {
+            Color trunk = new Color(0.40f, 0.26f, 0.13f);
+            Color leaves = new Color(0.13f, 0.42f, 0.18f);
+            Color stone = new Color(0.50f, 0.50f, 0.52f);
+
+            for (int i = 0; i < TreeCount; i++)
+            {
+                Vector3 spot = RandomSpot(7f);
+                float height = Random.Range(1.2f, 2.0f);
+                Prim(PrimitiveType.Cylinder, "TreeTrunk", spot + new Vector3(0f, height, 0f), new Vector3(0.5f, height, 0.5f), trunk, true);
+                float crown = Random.Range(2.2f, 3.2f);
+                Prim(PrimitiveType.Sphere, "TreeCrown", spot + new Vector3(0f, height * 2f + crown * 0.3f, 0f), new Vector3(crown, crown, crown), leaves, false);
+            }
+
+            for (int i = 0; i < RockCount; i++)
+            {
+                Vector3 spot = RandomSpot(7f);
+                float s = Random.Range(0.8f, 1.8f);
+                Prim(PrimitiveType.Cube, "Rock", spot + new Vector3(0f, s * 0.4f, 0f), new Vector3(s, s * 0.8f, s * 1.2f), stone, true);
+            }
+        }
+
+        private void BuildNpc()
+        {
+            GameObject npc = Prim(PrimitiveType.Capsule, "Elder", NpcPoint, new Vector3(0.9f, 0.9f, 0.9f), new Color(0.95f, 0.8f, 0.15f), true);
+            _npc = npc.transform;
+        }
+
+        private void BuildPickups()
+        {
+            Color woodColor = new Color(0.55f, 0.35f, 0.15f);
+            Color foodColor = new Color(0.85f, 0.15f, 0.15f);
+
+            for (int i = 0; i < WoodCount; i++)
+            {
+                Vector3 spot = RandomSpot(4f);
+                GameObject log = Prim(PrimitiveType.Cube, "Wood", spot + new Vector3(0f, 0.4f, 0f), new Vector3(0.9f, 0.3f, 0.3f), woodColor, false);
+                _pickups.Add(new Pickup { Transform = log.transform, IsWood = true, BaseY = 0.4f });
+            }
+
+            for (int i = 0; i < FoodCount; i++)
+            {
+                Vector3 spot = RandomSpot(4f);
+                GameObject apple = Prim(PrimitiveType.Sphere, "Food", spot + new Vector3(0f, 0.5f, 0f), new Vector3(0.45f, 0.45f, 0.45f), foodColor, false);
+                _pickups.Add(new Pickup { Transform = apple.transform, IsWood = false, BaseY = 0.5f });
+            }
+        }
+
+        private void BuildPlayer()
+        {
+            GameObject player = Prim(PrimitiveType.Capsule, "Player", SpawnPoint, new Vector3(0.8f, 0.8f, 0.8f), new Color(0.2f, 0.45f, 0.9f), false);
+            _player = player.transform;
+            _controller = player.AddComponent<CharacterController>(); // default 2m tall / 0.5m radius, scaled by 0.8
+
+            // A small "nose" so the facing direction is visible.
+            GameObject nose = Prim(PrimitiveType.Cube, "Nose", Vector3.zero, new Vector3(0.3f, 0.2f, 0.3f), Color.white, false);
+            nose.transform.SetParent(_player, false);
+            nose.transform.localPosition = new Vector3(0f, 0.5f, 0.5f);
+        }
+
+        /// <summary>Random point inside the walls, away from the spawn point and the NPC.</summary>
+        private static Vector3 RandomSpot(float minDistanceFromSpawn)
+        {
+            float range = WorldHalfSize - 3f;
+            Vector3 spot = Vector3.zero;
+            for (int attempt = 0; attempt < 20; attempt++)
+            {
+                spot = new Vector3(Random.Range(-range, range), 0f, Random.Range(-range, range));
+                bool farFromSpawn = spot.sqrMagnitude > minDistanceFromSpawn * minDistanceFromSpawn;
+                Vector3 toNpc = spot - NpcPoint;
+                toNpc.y = 0f;
+                if (farFromSpawn && toNpc.sqrMagnitude > 25f)
+                {
+                    return spot;
+                }
+            }
+
+            return spot;
+        }
+
+        private Material GetMaterial(Color color)
+        {
+            Material material;
+            if (!_materials.TryGetValue(color, out material))
+            {
+                material = new Material(_baseMaterial);
+                material.color = color;
+                _materials.Add(color, material);
+            }
+
+            return material;
+        }
+
+        private GameObject Prim(PrimitiveType type, string objectName, Vector3 position, Vector3 scale, Color color, bool keepCollider)
+        {
+            GameObject go = GameObject.CreatePrimitive(type);
+            go.name = objectName;
+            go.transform.SetParent(_root, false);
+            go.transform.localPosition = position;
+            go.transform.localScale = scale;
+            go.GetComponent<Renderer>().sharedMaterial = GetMaterial(color);
+
+            if (!keepCollider)
+            {
+                Collider collider = go.GetComponent<Collider>();
+                if (collider != null)
+                {
+                    Destroy(collider);
+                }
+            }
+
+            return go;
+        }
+
+        // =====================================================================
+        // HUD (IMGUI: no Canvas or assets required)
+        // =====================================================================
+        private void OnGUI()
+        {
+            if (Event.current.type != EventType.Repaint || _player == null)
+            {
+                return;
+            }
+
+            EnsureStyles();
+            float h = Screen.height;
+            float margin = h * 0.02f;
+            float barWidth = Mathf.Min(Screen.width * 0.30f, 380f);
+            float barHeight = h * 0.05f;
+
+            DrawBar(new Rect(margin, margin, barWidth, barHeight), _health / MaxStat, new Color(0.85f, 0.15f, 0.15f), "HEALTH " + Mathf.CeilToInt(_health));
+            DrawBar(new Rect(margin, margin * 2f + barHeight, barWidth, barHeight), _stamina / MaxStat, _exhausted ? new Color(0.6f, 0.6f, 0.2f) : new Color(0.2f, 0.75f, 0.3f), "STAMINA " + Mathf.CeilToInt(_stamina));
+            DrawBar(new Rect(margin, margin * 3f + barHeight * 2f, barWidth, barHeight), _hunger / MaxStat, new Color(0.9f, 0.55f, 0.1f), "HUNGER " + Mathf.CeilToInt(_hunger));
+
+            float textY = margin * 4f + barHeight * 3f;
+            GUI.Label(new Rect(margin, textY, Screen.width * 0.6f, barHeight), "Wood: " + _wood + "   Food: " + _food, _leftStyle);
+            GUI.Label(new Rect(margin, textY + barHeight, Screen.width * 0.7f, barHeight), QuestText(), _leftStyle);
+
+            if (Time.time < _toastUntil)
+            {
+                GUI.Label(new Rect(0f, h * 0.12f, Screen.width, barHeight * 1.5f), _toast, _centerStyle);
+            }
+
+            Vector3 npcScreen = _camera.WorldToScreenPoint(_npc.position + Vector3.up * 1.8f);
+            if (npcScreen.z > 0f)
+            {
+                GUI.Label(new Rect(npcScreen.x - 80f, h - npcScreen.y - barHeight * 0.5f, 160f, barHeight), "Elder", _centerStyle);
+            }
+
+            DrawButton(_input.JumpRect, "JUMP");
+            DrawButton(_input.SprintRect, "RUN");
+            DrawButton(_input.EatRect, "EAT");
+            DrawButton(_input.SaveRect, "SAVE");
+            DrawButton(_input.LoadRect, "LOAD");
+
+            if (_input.JoystickActive)
+            {
+                float r = _input.JoystickRadius;
+                Vector2 knob = _input.JoystickOrigin + Vector2.ClampMagnitude(_input.JoystickCurrent - _input.JoystickOrigin, r);
+                Fill(new Rect(_input.JoystickOrigin.x - r, _input.JoystickOrigin.y - r, r * 2f, r * 2f), new Color(1f, 1f, 1f, 0.15f));
+                Fill(new Rect(knob.x - r * 0.35f, knob.y - r * 0.35f, r * 0.7f, r * 0.7f), new Color(1f, 1f, 1f, 0.5f));
+            }
+
+            if (_dead)
+            {
+                Fill(new Rect(0f, 0f, Screen.width, h), new Color(0f, 0f, 0f, 0.7f));
+                GUI.Label(new Rect(0f, h * 0.4f, Screen.width, barHeight * 2f), "YOU DIED\nTap or press R to respawn", _centerStyle);
+            }
+        }
+
+        private string QuestText()
+        {
+            switch (_quest)
+            {
+                case QuestState.NotStarted:
+                    return "Quest: find the yellow Elder";
+                case QuestState.Active:
+                    return "Quest: bring the Elder wood " + Mathf.Min(_wood, WoodGoal) + "/" + WoodGoal;
+                default:
+                    return "Quest complete!";
+            }
+        }
+
+        private void EnsureStyles()
+        {
+            if (_leftStyle == null)
+            {
+                _leftStyle = new GUIStyle(GUI.skin.label) { fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleLeft };
+                _leftStyle.normal.textColor = Color.white;
+                _centerStyle = new GUIStyle(GUI.skin.label) { fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter };
+                _centerStyle.normal.textColor = Color.white;
+            }
+
+            int size = Mathf.Max(12, Mathf.RoundToInt(Screen.height * 0.032f));
+            _leftStyle.fontSize = size;
+            _centerStyle.fontSize = size;
+        }
+
+        private void DrawBar(Rect rect, float fraction, Color fill, string label)
+        {
+            Fill(rect, new Color(0f, 0f, 0f, 0.55f));
+            Fill(new Rect(rect.x + 2f, rect.y + 2f, (rect.width - 4f) * Mathf.Clamp01(fraction), rect.height - 4f), fill);
+            GUI.Label(rect, label, _centerStyle);
+        }
+
+        private void DrawButton(Rect rect, string label)
+        {
+            Fill(rect, new Color(0f, 0f, 0f, 0.45f));
+            GUI.Label(rect, label, _centerStyle);
+        }
+
+        private static void Fill(Rect rect, Color color)
+        {
+            Color previous = GUI.color;
+            GUI.color = color;
+            GUI.DrawTexture(rect, Texture2D.whiteTexture);
+            GUI.color = previous;
+        }
+    }
+}
